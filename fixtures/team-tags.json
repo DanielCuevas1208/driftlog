@@ -1,0 +1,36 @@
+{
+  "title": "Team tags merge",
+  "base": "ab",
+  "replicas": [
+    {
+      "name": "alice-1",
+      "text": [
+        { "op": "insert", "index": 1, "value": "X" }
+      ],
+      "register": [
+        { "op": "set", "value": "shared" }
+      ],
+      "set": [
+        { "op": "add", "value": "gleam" },
+        { "op": "add", "value": "crdt" }
+      ]
+    },
+    {
+      "name": "bob-1",
+      "text": [
+        { "op": "insert", "index": 1, "value": "Y" }
+      ],
+      "register": [],
+      "set": [
+        { "op": "add", "value": "erlang" },
+        { "op": "add", "value": "draft" },
+        { "op": "remove", "value": "draft" }
+      ]
+    }
+  ],
+  "expected": {
+    "text": "aYXb",
+    "register": "shared",
+    "set": ["crdt", "erlang", "gleam"]
+  }
+}

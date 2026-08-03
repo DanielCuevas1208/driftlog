@@ -9,11 +9,12 @@ The stack is Gleam, Erlang/OTP, and gleeunit.
 
 ## What is inside
 
-Driftlog has three data types and a small sync stack.
+Driftlog has four data types and a small sync stack.
 
 - `driftlog/register` is a last-writer-wins register.
 - `driftlog/rga` is a replicated growable array (list).
 - `driftlog/text` is collaborative text over an RGA.
+- `driftlog/orset` is an observed-remove set.
 - `driftlog/sync` holds the JSON protocol, a store-and-forward server, and a client.
 - `driftlog/clock` mints unique, ordered stamps for each replica.
 
@@ -35,6 +36,12 @@ The RGA orders elements by stamp.
 Concurrent edits at one position get one deterministic order.
 Deleted elements stay as tombstones.
 Their descendants keep their place.
+
+The set mints a fresh stamp for every add.
+A remove tombstones the stamps this replica has seen.
+Concurrent adds use stamps the remover has not seen.
+Those adds survive, so the value stays present.
+Re-adding after a remove creates a new stamp.
 
 Merging is commutative, associative, and idempotent.
 Merging two replicas gives the same state as merging the reverse order.
@@ -64,7 +71,7 @@ Use these commands for the other modes.
 
 ```sh
 gleam run -- replay fixtures/field-notes.json
-gleam run -- replay fixtures/concurrent-typing.json
+gleam run -- replay fixtures/team-tags.json
 gleam run -- server 0
 ```
 
@@ -73,23 +80,25 @@ The `server` mode runs a standalone server on a port.
 Port `0` asks the OS for a free port.
 
 The fixtures directory holds sample data.
-It contains two scenarios.
+It contains three scenarios.
 Each scenario has a base document, offline edits, and the expected result.
 
 ## Sample output
 
 The demo ends by printing the final state of both replicas.
-They show the same text and the same register.
+They show the same text, register, and set.
 
 ```
 4. Final state
 ---------------
 alice-1
     text     "The quick lazy fox dog"
-    register "Driftlog v0.1-final"
+    register "Driftlog v0.2-final"
+    set      ["crdt", "erlang", "gleam"]
 bob-1
     text     "The quick lazy fox dog"
-    register "Driftlog v0.1-final"
+    register "Driftlog v0.2-final"
+    set      ["crdt", "erlang", "gleam"]
 Result: converged to the expected state.
 ```
 
@@ -116,6 +125,21 @@ let #(bob, _) = text.insert_string(bob, 5, " brave")
 
 let merged = text.merge(alice, bob)
 text.read(merged) // "Hello brave world"
+```
+
+Create a shared set.
+
+```gleam
+import driftlog/orset
+
+let alice = orset.new("laptop-1")
+let #(alice, _) = orset.add(alice, "gleam")
+
+let bob = orset.merge(orset.new("phone-1"), alice)
+let #(bob, _) = orset.add(bob, "erlang")
+
+let merged = orset.merge(alice, bob)
+orset.to_list(merged) // members from both replicas
 ```
 
 Give each running replica a unique name.
@@ -160,7 +184,7 @@ Run the test suite.
 gleam test
 ```
 
-The suite has 53 tests and they all pass.
+The suite has 72 tests and they all pass.
 It covers the data types and the merge properties.
 It also runs real socket exchanges against an in-memory server.
 All tests are deterministic.
@@ -188,6 +212,7 @@ src/
     register.gleam        last-writer-wins register
     rga.gleam             replicated growable array
     text.gleam            collaborative text
+    orset.gleam           observed-remove set
     sync/
       protocol.gleam      JSON wire protocol
       net.gleam           socket wrapper around gen_tcp
@@ -201,6 +226,20 @@ test/                     unit and property tests
 fixtures/                 sample scenarios
 ```
 
+## Roadmap
+
+Complete in 0.2.0:
+
+- Add an observed-remove set (`driftlog/orset`).
+- Carry set operations over the sync protocol and the peer.
+
+Remaining:
+
+- Version 0.2: add delta state exchange to the server.
+- Version 0.3: persist the server state to disk.
+- Version 0.3: add a text API with ranges and undo.
+- Version 0.4: add end-to-end encryption for the wire format.
+
 ## Limitations
 
 - The server keeps state in memory.
@@ -211,16 +250,8 @@ fixtures/                 sample scenarios
   Very large documents are slower than a delta-based design.
 - The text document edits in graphemes.
   It does not handle cursor semantics or selection ranges.
-- The register and list sync only string values on the wire.
+- The register, list, and set sync only string values on the wire.
   Other value types need a custom encoder.
-
-## Roadmap
-
-- Version 0.2: add an OR-set (observed-remove set).
-- Version 0.2: add delta state exchange to the server.
-- Version 0.3: persist the server state to disk.
-- Version 0.3: add a text API with ranges and undo.
-- Version 0.4: add end-to-end encryption for the wire format.
 
 ## License
 

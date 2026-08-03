@@ -4,6 +4,8 @@ import driftlog/sync/peer
 import driftlog/sync/protocol
 import driftlog/sync/server
 import gleam/list
+import gleam/set
+import gleam/string
 import gleeunit/should
 
 fn alice_insert(sequence: Int) -> protocol.WireOp {
@@ -98,6 +100,60 @@ pub fn peers_converge_through_the_server_test() {
   let bob_snapshot = peer.snapshot(bob)
   should.equal(alice_snapshot.text, bob_snapshot.text)
   should.equal(alice_snapshot.text, "aYXb")
+
+  peer.stop(alice)
+  peer.stop(bob)
+  server.stop(server_subject)
+}
+
+pub fn the_server_forwards_set_operations_test() {
+  let #(server_subject, port) = server.start(0) |> should.be_ok
+  let host = "127.0.0.1"
+  let add = protocol.WireAdd(atom: Atom(Stamp(1, "alice-1")), value: "gleam")
+
+  let first =
+    client.sync("alice-1", host, port, "set", 0, [add])
+    |> should.be_ok
+  should.equal(first.stored, 1)
+  should.equal(first.cursor, 1)
+
+  let second =
+    client.sync("bob-1", host, port, "set", 0, [])
+    |> should.be_ok
+  should.equal(second.forward, [add])
+  should.equal(second.cursor, 1)
+
+  server.stop(server_subject)
+}
+
+pub fn peers_converge_a_set_through_the_server_test() {
+  let #(server_subject, port) = server.start(0) |> should.be_ok
+
+  let alice = peer.start("alice-1", "127.0.0.1", port) |> should.be_ok
+  let bob = peer.start("bob-1", "127.0.0.1", port) |> should.be_ok
+
+  // Each peer edits a shared set offline.
+  let _ = peer.add_set(alice, "gleam")
+  let _ = peer.add_set(alice, "crdt")
+  let _ = peer.add_set(bob, "erlang")
+  let _ = peer.add_set(bob, "draft")
+  let _ = peer.remove_set(bob, "draft")
+
+  // Exchange through the server until the set settles.
+  let _ = peer.sync(alice)
+  let _ = peer.sync(bob)
+  let _ = peer.sync(alice)
+  let _ = peer.sync(bob)
+
+  let alice_snapshot = peer.snapshot(alice)
+  let bob_snapshot = peer.snapshot(bob)
+  should.equal(alice_snapshot.set, bob_snapshot.set)
+  should.equal(
+    alice_snapshot.set
+      |> set.to_list
+      |> list.sort(by: string.compare),
+    ["crdt", "erlang", "gleam"],
+  )
 
   peer.stop(alice)
   peer.stop(bob)

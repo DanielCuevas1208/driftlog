@@ -1,7 +1,7 @@
 //// Driftlog: conflict-free replicated data types for offline-first
 //// collaboration.
 ////
-//// Driftlog provides three replicated data types and a small sync stack.
+//// Driftlog provides four replicated data types and a small sync stack.
 //// Two replicas edit the same data offline, then merge without conflicts.
 //// Merging is commutative, associative, and idempotent: any delivery order
 //// produces the same state.
@@ -11,6 +11,7 @@
 ////  - `driftlog/register`   a last-writer-wins register
 ////  - `driftlog/rga`        a replicated growable array (list)
 ////  - `driftlog/text`       collaborative text over an RGA
+////  - `driftlog/orset`      an observed-remove set
 ////  - `driftlog/sync`       JSON protocol, store-and-forward server, client
 ////
 //// A replica owns a clock (`driftlog/clock`) that mints unique, ordered
@@ -37,8 +38,8 @@
 
 import driftlog_demo
 
-/// The version of this release, such as `"0.1.0"`.
-pub const version: String = "0.1.0"
+/// The version of this release, such as `"0.2.0"`.
+pub const version: String = "0.2.0"
 
 /// Format a replica name for logs and demos.
 pub fn describe(peer: String) -> String {
@@ -46,7 +47,7 @@ pub fn describe(peer: String) -> String {
 }
 
 /// The number of Driftlog data types in this release.
-pub const data_type_count: Int = 3
+pub const data_type_count: Int = 4
 
 /// The number of sync rooms a peer uses by default.
 pub const default_room_count: Int = 2

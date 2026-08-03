@@ -1,3 +1,4 @@
+import driftlog/orset
 import driftlog/register
 import driftlog/rga.{type ListOp, type Rga}
 import gleam/int
@@ -174,4 +175,84 @@ fn apply_register_ops(
   list.fold(ops, register.new("ref", ""), fn(acc, op) {
     register.apply(acc, op)
   })
+}
+
+/// Grow a set with random valid edits.
+///
+/// Every edit is applied to the running replica as it is generated, so
+/// removals always target a live value. The returned operations are the whole
+/// edit history.
+fn grow_set(
+  rng: Rng,
+  steps: Int,
+  orset: orset.Orset(String),
+) -> #(Rng, List(orset.OrsetOp(String))) {
+  case steps > 0 {
+    False -> #(rng, [])
+    True -> {
+      let #(rng, kind) = next(rng, 2)
+      case kind {
+        0 -> {
+          let #(rng, value_index) = next(rng, 3)
+          let #(orset, op) = orset.add(orset, alphabet(value_index))
+          let #(rng, rest) = grow_set(rng, steps - 1, orset)
+          #(rng, [op, ..rest])
+        }
+        _ -> {
+          case orset.size(orset) > 0 {
+            True -> {
+              let live = orset.to_list(orset)
+              let #(rng, index) = next(rng, list.length(live))
+              let value = at(live, index) |> should.be_ok
+              let #(orset, ops) = orset.remove(orset, value)
+              let #(rng, rest) = grow_set(rng, steps - 1, orset)
+              #(rng, list.append(ops, rest))
+            }
+            False -> grow_set(rng, steps - 1, orset)
+          }
+        }
+      }
+    }
+  }
+}
+
+fn apply_all_set(
+  orset: orset.Orset(String),
+  ops: List(orset.OrsetOp(String)),
+) -> orset.Orset(String) {
+  list.fold(ops, orset, fn(acc, op) { orset.apply(acc, op) })
+}
+
+fn sorted_set_values(orset: orset.Orset(String)) -> List(String) {
+  orset.to_list(orset) |> list.sort(by: string.compare)
+}
+
+pub fn orset_ops_in_any_order_converge_test() {
+  let #(rng, ops) = grow_set(Rng(19), 40, orset.new("ref"))
+  let golden = sorted_set_values(apply_all_set(orset.new("ref"), ops))
+
+  let #(rng, perm1) = permute(rng, ops)
+  let #(rng, perm2) = permute(rng, ops)
+  let #(_, perm3) = permute(rng, ops)
+
+  should.equal(sorted_set_values(apply_all_set(orset.new("a"), perm1)), golden)
+  should.equal(sorted_set_values(apply_all_set(orset.new("b"), perm2)), golden)
+  should.equal(sorted_set_values(apply_all_set(orset.new("c"), perm3)), golden)
+}
+
+pub fn orset_state_merge_equals_apply_all_ops_test() {
+  let #(_, ops) = grow_set(Rng(23), 50, orset.new("ref"))
+  let golden = sorted_set_values(apply_all_set(orset.new("ref"), ops))
+
+  let #(a_ops, b_ops) =
+    list.index_fold(ops, #([], []), fn(acc, op, index) {
+      case index % 2 == 0 {
+        True -> #(list.append(pair.first(acc), [op]), pair.second(acc))
+        False -> #(pair.first(acc), list.append(pair.second(acc), [op]))
+      }
+    })
+  let a = apply_all_set(orset.new("a"), a_ops)
+  let b = apply_all_set(orset.new("b"), b_ops)
+  let merged = orset.merge(a, b)
+  should.equal(sorted_set_values(merged), golden)
 }

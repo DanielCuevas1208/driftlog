@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -15,11 +16,12 @@ jobs:
         with:
           otp-version: "27"
           gleam-version: "1.18.1"
-          rebar3-version: "3"
       - name: Fetch dependencies
         run: gleam deps download
       - name: Check formatting
         run: gleam format --check src test
+      - name: Typecheck
+        run: gleam check
       - name: Run tests
         run: gleam test
       - name: Build the release target
