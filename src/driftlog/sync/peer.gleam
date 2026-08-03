@@ -1,25 +1,27 @@
 //// A replica peer.
 ////
-//// A peer owns a text document and a register, plus the operations it has not
-//// sent yet. Local edits append to the pending queue. A sync sends the
-//// pending operations to the server for one room, applies what the server
-//// forwards, and advances the cursor. Local edits and syncs run inside an
-//// actor, so the peer never interleaves them.
+//// A peer owns a text document, a register, and a set, plus the operations
+//// it has not sent yet. Local edits append to the pending queues. A sync
+//// sends the pending operations to the server for each room, applies what
+//// the server forwards, and advances the cursors. Local edits and syncs run
+//// inside an actor, so the peer never interleaves them.
 
+import driftlog/orset
 import driftlog/register
 import driftlog/sync/client
 import driftlog/sync/protocol.{
-  type WireOp, list_op_to_wire, register_op_to_wire, wire_to_list_op,
-  wire_to_register_op,
+  type WireOp, list_op_to_wire, register_op_to_wire, set_op_to_wire,
+  wire_to_list_op, wire_to_register_op, wire_to_set_op,
 }
 import driftlog/text
 import gleam/erlang/process
 import gleam/list
 import gleam/otp/actor
+import gleam/set.{type Set}
 
 /// A view of a peer's documents.
 pub type PeerSnapshot {
-  PeerSnapshot(text: String, register: String)
+  PeerSnapshot(text: String, register: String, set: Set(String))
 }
 
 /// The outcome of one sync.
@@ -30,6 +32,8 @@ pub type SyncReport {
     text_forwarded: Int,
     register_stored: Int,
     register_forwarded: Int,
+    set_stored: Int,
+    set_forwarded: Int,
   )
 }
 
@@ -38,6 +42,8 @@ pub type PeerMessage {
   EditInsert(reply_to: process.Subject(PeerSnapshot), index: Int, value: String)
   EditDelete(reply_to: process.Subject(PeerSnapshot), index: Int, count: Int)
   SetRegister(reply_to: process.Subject(PeerSnapshot), value: String)
+  AddSet(reply_to: process.Subject(PeerSnapshot), value: String)
+  RemoveSet(reply_to: process.Subject(PeerSnapshot), value: String)
   Sync(reply_to: process.Subject(SyncReport))
   Snapshot(reply_to: process.Subject(PeerSnapshot))
   Stop
@@ -51,10 +57,13 @@ pub type PeerState {
     port: Int,
     document: text.Text,
     register: register.Register(String),
+    set: orset.Orset(String),
     pending_text: List(WireOp),
     pending_register: List(WireOp),
+    pending_set: List(WireOp),
     text_cursor: Int,
     register_cursor: Int,
+    set_cursor: Int,
   )
 }
 
@@ -63,6 +72,9 @@ pub const text_room = "text"
 
 /// The name of the room that carries register operations.
 pub const register_room = "register"
+
+/// The name of the room that carries set operations.
+pub const set_room = "set"
 
 /// Start a peer actor.
 ///
@@ -79,10 +91,13 @@ pub fn start(
       port:,
       document: text.new(peer),
       register: register.new(peer, ""),
+      set: orset.new(peer),
       pending_text: [],
       pending_register: [],
+      pending_set: [],
       text_cursor: 0,
       register_cursor: 0,
+      set_cursor: 0,
     )
   let builder = actor.new(state) |> actor.on_message(handle)
   case actor.start(builder) {
@@ -115,6 +130,22 @@ pub fn set_register(
   value: String,
 ) -> PeerSnapshot {
   actor.call(peer, 5000, SetRegister(_, value))
+}
+
+/// Add a value to the peer's set.
+pub fn add_set(
+  peer: process.Subject(PeerMessage),
+  value: String,
+) -> PeerSnapshot {
+  actor.call(peer, 5000, AddSet(_, value))
+}
+
+/// Remove a value from the peer's set.
+pub fn remove_set(
+  peer: process.Subject(PeerMessage),
+  value: String,
+) -> PeerSnapshot {
+  actor.call(peer, 5000, RemoveSet(_, value))
 }
 
 /// Sync both rooms with the server.
@@ -168,9 +199,25 @@ fn handle(
       process.send(reply_to, snapshot_of(state))
       actor.continue(state)
     }
+    AddSet(reply_to:, value:) -> {
+      let #(set, op) = orset.add(state.set, value)
+      let pending = list.append(state.pending_set, [set_op_to_wire(op)])
+      let state = PeerState(..state, set:, pending_set: pending)
+      process.send(reply_to, snapshot_of(state))
+      actor.continue(state)
+    }
+    RemoveSet(reply_to:, value:) -> {
+      let #(set, ops) = orset.remove(state.set, value)
+      let pending =
+        list.append(state.pending_set, list.map(ops, set_op_to_wire))
+      let state = PeerState(..state, set:, pending_set: pending)
+      process.send(reply_to, snapshot_of(state))
+      actor.continue(state)
+    }
     Sync(reply_to:) -> {
       let #(state, text_stored, text_forwarded) = sync_text(state)
       let #(state, register_stored, register_forwarded) = sync_register(state)
+      let #(state, set_stored, set_forwarded) = sync_set(state)
       process.send(
         reply_to,
         SyncReport(
@@ -179,6 +226,8 @@ fn handle(
           text_forwarded:,
           register_stored:,
           register_forwarded:,
+          set_stored:,
+          set_forwarded:,
         ),
       )
       actor.continue(state)
@@ -195,6 +244,7 @@ fn snapshot_of(state: PeerState) -> PeerSnapshot {
   PeerSnapshot(
     text: text.read(state.document),
     register: register.read(state.register),
+    set: orset.read(state.set),
   )
 }
 
@@ -256,6 +306,33 @@ fn sync_register(state: PeerState) -> #(PeerState, Int, Int) {
           register_cursor: response.cursor,
           pending_register: [],
         )
+      #(state, response.stored, list.length(response.forward))
+    }
+    Error(_) -> #(state, 0, 0)
+  }
+}
+
+fn sync_set(state: PeerState) -> #(PeerState, Int, Int) {
+  case
+    client.sync(
+      state.peer,
+      state.host,
+      state.port,
+      set_room,
+      state.set_cursor,
+      state.pending_set,
+    )
+  {
+    Ok(response) -> {
+      let set =
+        list.fold(response.forward, state.set, fn(document, wire_op) {
+          case wire_to_set_op(wire_op) {
+            Ok(op) -> orset.apply(document, op)
+            Error(_) -> document
+          }
+        })
+      let state =
+        PeerState(..state, set:, set_cursor: response.cursor, pending_set: [])
       #(state, response.stored, list.length(response.forward))
     }
     Error(_) -> #(state, 0, 0)

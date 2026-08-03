@@ -8,8 +8,12 @@
         { "op": "insert", "index": 16, "value": "lazy " }
       ],
       "register": [
-        { "op": "set", "value": "Driftlog v0.1" },
-        { "op": "set", "value": "Driftlog v0.1-final" }
+        { "op": "set", "value": "Driftlog v0.2" },
+        { "op": "set", "value": "Driftlog v0.2-final" }
+      ],
+      "set": [
+        { "op": "add", "value": "erlang" },
+        { "op": "add", "value": "gleam" }
       ]
     },
     {
@@ -20,11 +24,17 @@
       ],
       "register": [
         { "op": "set", "value": "draft" }
+      ],
+      "set": [
+        { "op": "add", "value": "crdt" },
+        { "op": "add", "value": "draft" },
+        { "op": "remove", "value": "draft" }
       ]
     }
   ],
   "expected": {
     "text": "The quick lazy fox dog",
-    "register": "Driftlog v0.1-final"
+    "register": "Driftlog v0.2-final",
+    "set": ["crdt", "erlang", "gleam"]
   }
 }

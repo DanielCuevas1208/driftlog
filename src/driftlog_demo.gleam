@@ -9,12 +9,12 @@
 
 import driftlog/sync/net
 import driftlog/sync/peer.{
-  type PeerMessage, type PeerSnapshot, edit_delete, edit_insert, set_register,
-  snapshot, stop, sync,
+  type PeerMessage, type PeerSnapshot, add_set, edit_delete, edit_insert,
+  remove_set, set_register, snapshot, stop, sync,
 }
 import driftlog/sync/scenario.{
-  type Scenario, EditDelete, EditInsert, EditSetRegister, Replica, Scenario,
-  decode as decode_scenario,
+  type Scenario, EditAdd, EditDelete, EditInsert, EditRemove, EditSetRegister,
+  Replica, Scenario, decode as decode_scenario,
 }
 import driftlog/sync/server
 import gleam/bit_array
@@ -23,11 +23,12 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/result
+import gleam/set
 import gleam/string
 
 const host = "127.0.0.1"
 
-const demo_version = "0.1.0"
+const demo_version = "0.2.0"
 
 /// A started peer actor and its replica name.
 type ConnectedPeer {
@@ -152,7 +153,7 @@ fn edit_offline(scenario: Scenario, peers: List(ConnectedPeer)) -> Nil {
               io.println("    " <> before <> "  ->  " <> after)
               Nil
             }
-            EditSetRegister(_) -> Nil
+            _ -> Nil
           }
         })
         list.each(replica.register, fn(edit) {
@@ -160,6 +161,23 @@ fn edit_offline(scenario: Scenario, peers: List(ConnectedPeer)) -> Nil {
             EditSetRegister(value:) -> {
               let _ = set_register(peer.subject, value)
               io.println(peer.name <> " sets register to " <> quote(value))
+              Nil
+            }
+            _ -> Nil
+          }
+        })
+        list.each(replica.set, fn(edit) {
+          case edit {
+            EditAdd(value:) -> {
+              let _ = add_set(peer.subject, value)
+              io.println(peer.name <> " adds " <> quote(value) <> " to set")
+              Nil
+            }
+            EditRemove(value:) -> {
+              let _ = remove_set(peer.subject, value)
+              io.println(
+                peer.name <> " removes " <> quote(value) <> " from set",
+              )
               Nil
             }
             _ -> Nil
@@ -197,8 +215,9 @@ fn sync_rounds(peers: List(ConnectedPeer), rounds_left: Int) -> Bool {
 fn sync_all(peers: List(ConnectedPeer)) -> Int {
   list.fold(peers, 0, fn(acc, peer) {
     let report = sync(peer.subject)
-    let stored = report.text_stored + report.register_stored
-    let forwarded = report.text_forwarded + report.register_forwarded
+    let stored = report.text_stored + report.register_stored + report.set_stored
+    let forwarded =
+      report.text_forwarded + report.register_forwarded + report.set_forwarded
     io.println(
       peer.name
       <> " syncs: sends "
@@ -223,6 +242,7 @@ fn final_report(
     io.println(name)
     io.println("    text     " <> quote(snap.text))
     io.println("    register " <> quote(snap.register))
+    io.println("    set      " <> list_string(sorted_set(snap.set)))
     Nil
   })
   case verify(scenario, snaps) {
@@ -247,16 +267,31 @@ fn verify(
           let #(_, snap) = entry
           snap.register == first.register
         })
+      let same_set =
+        list.all(snaps, fn(entry) {
+          let #(_, snap) = entry
+          sorted_set(snap.set) == sorted_set(first.set)
+        })
       let matches_expected =
         first.text == scenario.expected_text
         && first.register == scenario.expected_register
-      case same_text && same_register && matches_expected {
+        && sorted_set(first.set)
+        == list.sort(scenario.expected_set, by: string.compare)
+      case same_text && same_register && same_set && matches_expected {
         True -> Ok(Nil)
         False -> Error("replicas did not converge to the expected state")
       }
     }
     Error(_) -> Error("no replicas to check")
   }
+}
+
+fn sorted_set(members: set.Set(String)) -> List(String) {
+  members |> set.to_list |> list.sort(by: string.compare)
+}
+
+fn list_string(values: List(String)) -> String {
+  "[" <> string.join(list.map(values, quote), ", ") <> "]"
 }
 
 fn demo_scenario() -> Scenario {
@@ -268,9 +303,10 @@ fn demo_scenario() -> Scenario {
         name: "alice-1",
         text: [EditInsert(index: 16, value: "lazy ")],
         register: [
-          EditSetRegister("Driftlog v0.1"),
-          EditSetRegister("Driftlog v0.1-final"),
+          EditSetRegister("Driftlog v0.2"),
+          EditSetRegister("Driftlog v0.2-final"),
         ],
+        set: [EditAdd("erlang"), EditAdd("gleam")],
       ),
       Replica(
         name: "bob-1",
@@ -279,10 +315,12 @@ fn demo_scenario() -> Scenario {
           EditInsert(index: 13, value: " dog"),
         ],
         register: [EditSetRegister("draft")],
+        set: [EditAdd("crdt"), EditAdd("draft"), EditRemove("draft")],
       ),
     ],
     expected_text: "The quick lazy fox dog",
-    expected_register: "Driftlog v0.1-final",
+    expected_register: "Driftlog v0.2-final",
+    expected_set: ["crdt", "erlang", "gleam"],
   )
 }
 

@@ -1,4 +1,5 @@
 import driftlog/clock.{Atom, Stamp}
+import driftlog/orset
 import driftlog/register
 import driftlog/rga.{Delete, Insert}
 import driftlog/sync/protocol
@@ -17,6 +18,8 @@ fn sample_request() -> protocol.Request {
     alice_insert(),
     protocol.WireDelete(atom: Atom(Stamp(2, "alice-1"))),
     protocol.WireSet(value: "v", stamp: Stamp(5, "bob-1")),
+    protocol.WireAdd(atom: Atom(Stamp(6, "bob-1")), value: "gleam"),
+    protocol.WireRemove(atom: Atom(Stamp(4, "alice-1"))),
   ])
 }
 
@@ -48,9 +51,16 @@ pub fn operation_ids_are_distinct_test() {
     protocol.op_id(protocol.WireDelete(atom: Atom(Stamp(3, "alice-1"))))
   let set =
     protocol.op_id(protocol.WireSet(value: "v", stamp: Stamp(3, "alice-1")))
+  let add =
+    protocol.op_id(protocol.WireAdd(atom: Atom(Stamp(3, "alice-1")), value: "v"))
+  let remove =
+    protocol.op_id(protocol.WireRemove(atom: Atom(Stamp(3, "alice-1"))))
   should.not_equal(insert, delete)
   should.not_equal(insert, set)
+  should.not_equal(insert, add)
+  should.not_equal(insert, remove)
   should.not_equal(delete, set)
+  should.not_equal(add, remove)
 }
 
 pub fn list_ops_convert_to_wire_and_back_test() {
@@ -68,6 +78,29 @@ pub fn register_ops_convert_to_wire_and_back_test() {
   let op = register.Set(value: "draft", stamp: Stamp(1, "bob-1"))
   let wire = protocol.register_op_to_wire(op)
   should.equal(protocol.wire_to_register_op(wire), Ok(op))
+}
+
+pub fn set_ops_convert_to_wire_and_back_test() {
+  let add = orset.Add(atom: Atom(Stamp(1, "a")), value: "gleam")
+  let wire = protocol.set_op_to_wire(add)
+  should.equal(protocol.wire_to_set_op(wire), Ok(add))
+
+  let remove = orset.Remove(atom: Atom(Stamp(2, "a")))
+  let wire = protocol.set_op_to_wire(remove)
+  should.equal(protocol.wire_to_set_op(wire), Ok(remove))
+}
+
+pub fn set_wire_ops_reject_other_document_types_test() {
+  let add = protocol.WireAdd(atom: Atom(Stamp(1, "bob-1")), value: "gleam")
+  should.be_error(protocol.wire_to_list_op(add))
+  should.be_error(protocol.wire_to_register_op(add))
+}
+
+pub fn a_list_wire_op_is_not_a_set_op_test() {
+  should.be_error(protocol.wire_to_set_op(alice_insert()))
+  should.be_error(
+    protocol.wire_to_set_op(protocol.WireSet(value: "v", stamp: Stamp(1, "b"))),
+  )
 }
 
 pub fn a_set_wire_op_is_not_a_list_op_test() {

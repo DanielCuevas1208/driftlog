@@ -10,6 +10,7 @@
 //// and a client can apply an operation twice without changing its state.
 
 import driftlog/clock.{type Atom, type Stamp, Atom, Stamp, atom_id, stamp_id}
+import driftlog/orset
 import driftlog/register
 import driftlog/rga.{type ListOp}
 import gleam/dynamic/decode
@@ -18,12 +19,14 @@ import gleam/result
 
 /// An operation in a form that JSON can carry.
 ///
-/// Register values and list values are strings. A text document maps
-/// directly; a generic register converts to strings on the wire.
+/// Register values, list values, and set values are strings. A text document
+/// maps directly; a generic register converts to strings on the wire.
 pub type WireOp {
   WireSet(value: String, stamp: Stamp)
   WireInsert(atom: Atom, parent: Atom, value: String)
   WireDelete(atom: Atom)
+  WireAdd(atom: Atom, value: String)
+  WireRemove(atom: Atom)
 }
 
 /// A client-to-server sync request.
@@ -42,6 +45,8 @@ pub fn op_id(op: WireOp) -> String {
     WireSet(stamp:, ..) -> "set:" <> stamp_id(stamp)
     WireInsert(atom:, ..) -> "insert:" <> atom_id(atom)
     WireDelete(atom:) -> "delete:" <> atom_id(atom)
+    WireAdd(atom:, ..) -> "add:" <> atom_id(atom)
+    WireRemove(atom:) -> "remove:" <> atom_id(atom)
   }
 }
 
@@ -59,6 +64,8 @@ pub fn wire_to_list_op(op: WireOp) -> Result(ListOp(String), Nil) {
     WireInsert(atom:, parent:, value:) -> Ok(rga.Insert(atom:, parent:, value:))
     WireDelete(atom:) -> Ok(rga.Delete(atom:))
     WireSet(..) -> Error(Nil)
+    WireAdd(..) -> Error(Nil)
+    WireRemove(..) -> Error(Nil)
   }
 }
 
@@ -75,6 +82,27 @@ pub fn wire_to_register_op(
 ) -> Result(register.RegisterOp(String), Nil) {
   case op {
     WireSet(value:, stamp:) -> Ok(register.Set(value:, stamp:))
+    WireInsert(..) -> Error(Nil)
+    WireDelete(..) -> Error(Nil)
+    WireAdd(..) -> Error(Nil)
+    WireRemove(..) -> Error(Nil)
+  }
+}
+
+/// Convert a set operation to its wire form.
+pub fn set_op_to_wire(op: orset.OrsetOp(String)) -> WireOp {
+  case op {
+    orset.Add(atom:, value:) -> WireAdd(atom:, value:)
+    orset.Remove(atom:) -> WireRemove(atom:)
+  }
+}
+
+/// Convert a wire operation to a set operation.
+pub fn wire_to_set_op(op: WireOp) -> Result(orset.OrsetOp(String), Nil) {
+  case op {
+    WireAdd(atom:, value:) -> Ok(orset.Add(atom:, value:))
+    WireRemove(atom:) -> Ok(orset.Remove(atom:))
+    WireSet(..) -> Error(Nil)
     WireInsert(..) -> Error(Nil)
     WireDelete(..) -> Error(Nil)
   }
@@ -133,6 +161,17 @@ fn wire_op_to_json(op: WireOp) -> json.Json {
         #("kind", json.string("delete")),
         #("atom", atom_to_json(atom)),
       ])
+    WireAdd(atom:, value:) ->
+      json.object([
+        #("kind", json.string("add")),
+        #("atom", atom_to_json(atom)),
+        #("value", json.string(value)),
+      ])
+    WireRemove(atom:) ->
+      json.object([
+        #("kind", json.string("remove")),
+        #("atom", atom_to_json(atom)),
+      ])
   }
 }
 
@@ -179,6 +218,15 @@ fn wire_op_decoder() -> decode.Decoder(WireOp) {
     "delete" -> {
       use atom <- decode.field("atom", atom_decoder())
       decode.success(WireDelete(atom:))
+    }
+    "add" -> {
+      use atom <- decode.field("atom", atom_decoder())
+      use value <- decode.field("value", decode.string)
+      decode.success(WireAdd(atom:, value:))
+    }
+    "remove" -> {
+      use atom <- decode.field("atom", atom_decoder())
+      decode.success(WireRemove(atom:))
     }
     _ -> decode.failure(WireSet(value: "", stamp: Stamp(0, "")), "wire op kind")
   }
