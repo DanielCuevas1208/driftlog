@@ -1,0 +1,30 @@
+{
+  "title": "Field notes merge",
+  "base": "The quick brown fox",
+  "replicas": [
+    {
+      "name": "alice-1",
+      "text": [
+        { "op": "insert", "index": 16, "value": "lazy " }
+      ],
+      "register": [
+        { "op": "set", "value": "Driftlog v0.1" },
+        { "op": "set", "value": "Driftlog v0.1-final" }
+      ]
+    },
+    {
+      "name": "bob-1",
+      "text": [
+        { "op": "delete", "index": 10, "count": 6 },
+        { "op": "insert", "index": 13, "value": " dog" }
+      ],
+      "register": [
+        { "op": "set", "value": "draft" }
+      ]
+    }
+  ],
+  "expected": {
+    "text": "The quick lazy fox dog",
+    "register": "Driftlog v0.1-final"
+  }
+}

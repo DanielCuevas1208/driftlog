@@ -1,0 +1,24 @@
+{
+  "title": "Concurrent typing at the same position",
+  "base": "ab",
+  "replicas": [
+    {
+      "name": "alice-1",
+      "text": [
+        { "op": "insert", "index": 1, "value": "X" }
+      ],
+      "register": []
+    },
+    {
+      "name": "bob-1",
+      "text": [
+        { "op": "insert", "index": 1, "value": "Y" }
+      ],
+      "register": []
+    }
+  ],
+  "expected": {
+    "text": "aYXb",
+    "register": ""
+  }
+}

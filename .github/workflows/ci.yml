@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          gleam-version: "1.18.1"
+          rebar3-version: "3"
+      - name: Fetch dependencies
+        run: gleam deps download
+      - name: Check formatting
+        run: gleam format --check src test
+      - name: Run tests
+        run: gleam test
+      - name: Build the release target
+        run: gleam build
