@@ -1,16 +1,15 @@
 //// A replica peer.
 ////
 //// A peer owns a text document, a register, and a set, plus the operations
-//// it has not sent yet. Local edits append to the pending queues. A sync
-//// sends the pending operations to the server for each room, applies what
-//// the server forwards, and advances the cursors. Local edits and syncs run
+//// it has not sent yet. Local edits append to pending queues. A sync sends
+//// pending operations and known ids for each room. Local edits and syncs run
 //// inside an actor, so the peer never interleaves them.
 
 import driftlog/orset
 import driftlog/register
 import driftlog/sync/client
 import driftlog/sync/protocol.{
-  type WireOp, list_op_to_wire, register_op_to_wire, set_op_to_wire,
+  type WireOp, list_op_to_wire, op_id, register_op_to_wire, set_op_to_wire,
   wire_to_list_op, wire_to_register_op, wire_to_set_op,
 }
 import driftlog/text
@@ -67,6 +66,15 @@ pub type PeerState {
   )
 }
 
+type RuntimeState {
+  RuntimeState(
+    peer_state: PeerState,
+    known_text: Set(String),
+    known_register: Set(String),
+    known_set: Set(String),
+  )
+}
+
 /// The name of the room that carries text operations.
 pub const text_room = "text"
 
@@ -99,7 +107,14 @@ pub fn start(
       register_cursor: 0,
       set_cursor: 0,
     )
-  let builder = actor.new(state) |> actor.on_message(handle)
+  let builder =
+    actor.new(RuntimeState(
+      peer_state: state,
+      known_text: set.new(),
+      known_register: set.new(),
+      known_set: set.new(),
+    ))
+    |> actor.on_message(handle)
   case actor.start(builder) {
     Ok(started) -> Ok(started.data)
     Error(_) -> Error("peer actor failed to start")
@@ -164,54 +179,89 @@ pub fn stop(peer: process.Subject(PeerMessage)) -> Nil {
 }
 
 fn handle(
-  state: PeerState,
+  state: RuntimeState,
   message: PeerMessage,
-) -> actor.Next(PeerState, PeerMessage) {
+) -> actor.Next(RuntimeState, PeerMessage) {
+  let peer_state = state.peer_state
   case message {
     EditInsert(reply_to:, index:, value:) -> {
-      let #(document, ops) = text.insert_string(state.document, index, value)
-      let pending =
-        list.append(state.pending_text, list.map(ops, list_op_to_wire))
-      let state = PeerState(..state, document:, pending_text: pending)
-      process.send(reply_to, snapshot_of(state))
+      let #(document, ops) =
+        text.insert_string(peer_state.document, index, value)
+      let wire_ops = list.map(ops, list_op_to_wire)
+      let pending = list.append(peer_state.pending_text, wire_ops)
+      let peer_state = PeerState(..peer_state, document:, pending_text: pending)
+      let state =
+        RuntimeState(
+          ..state,
+          peer_state:,
+          known_text: remember(state.known_text, wire_ops),
+        )
+      process.send(reply_to, snapshot_of(peer_state))
       actor.continue(state)
     }
     EditDelete(reply_to:, index:, count:) -> {
-      case text.delete_range(state.document, index, count) {
+      case text.delete_range(peer_state.document, index, count) {
         Ok(#(document, ops)) -> {
-          let pending =
-            list.append(state.pending_text, list.map(ops, list_op_to_wire))
-          let state = PeerState(..state, document:, pending_text: pending)
-          process.send(reply_to, snapshot_of(state))
+          let wire_ops = list.map(ops, list_op_to_wire)
+          let pending = list.append(peer_state.pending_text, wire_ops)
+          let peer_state =
+            PeerState(..peer_state, document:, pending_text: pending)
+          let state =
+            RuntimeState(
+              ..state,
+              peer_state:,
+              known_text: remember(state.known_text, wire_ops),
+            )
+          process.send(reply_to, snapshot_of(peer_state))
           actor.continue(state)
         }
         Error(_) -> {
-          process.send(reply_to, snapshot_of(state))
+          process.send(reply_to, snapshot_of(peer_state))
           actor.continue(state)
         }
       }
     }
     SetRegister(reply_to:, value:) -> {
-      let #(register, op) = register.write(state.register, value)
-      let pending =
-        list.append(state.pending_register, [register_op_to_wire(op)])
-      let state = PeerState(..state, register:, pending_register: pending)
-      process.send(reply_to, snapshot_of(state))
+      let #(register, op) = register.write(peer_state.register, value)
+      let wire_op = register_op_to_wire(op)
+      let pending = list.append(peer_state.pending_register, [wire_op])
+      let peer_state =
+        PeerState(..peer_state, register:, pending_register: pending)
+      let state =
+        RuntimeState(
+          ..state,
+          peer_state:,
+          known_register: remember(state.known_register, [wire_op]),
+        )
+      process.send(reply_to, snapshot_of(peer_state))
       actor.continue(state)
     }
     AddSet(reply_to:, value:) -> {
-      let #(set, op) = orset.add(state.set, value)
-      let pending = list.append(state.pending_set, [set_op_to_wire(op)])
-      let state = PeerState(..state, set:, pending_set: pending)
-      process.send(reply_to, snapshot_of(state))
+      let #(set, op) = orset.add(peer_state.set, value)
+      let wire_op = set_op_to_wire(op)
+      let pending = list.append(peer_state.pending_set, [wire_op])
+      let peer_state = PeerState(..peer_state, set:, pending_set: pending)
+      let state =
+        RuntimeState(
+          ..state,
+          peer_state:,
+          known_set: remember(state.known_set, [wire_op]),
+        )
+      process.send(reply_to, snapshot_of(peer_state))
       actor.continue(state)
     }
     RemoveSet(reply_to:, value:) -> {
-      let #(set, ops) = orset.remove(state.set, value)
-      let pending =
-        list.append(state.pending_set, list.map(ops, set_op_to_wire))
-      let state = PeerState(..state, set:, pending_set: pending)
-      process.send(reply_to, snapshot_of(state))
+      let #(set, ops) = orset.remove(peer_state.set, value)
+      let wire_ops = list.map(ops, set_op_to_wire)
+      let pending = list.append(peer_state.pending_set, wire_ops)
+      let peer_state = PeerState(..peer_state, set:, pending_set: pending)
+      let state =
+        RuntimeState(
+          ..state,
+          peer_state:,
+          known_set: remember(state.known_set, wire_ops),
+        )
+      process.send(reply_to, snapshot_of(peer_state))
       actor.continue(state)
     }
     Sync(reply_to:) -> {
@@ -221,7 +271,7 @@ fn handle(
       process.send(
         reply_to,
         SyncReport(
-          snapshot: snapshot_of(state),
+          snapshot: snapshot_of(state.peer_state),
           text_stored:,
           text_forwarded:,
           register_stored:,
@@ -233,7 +283,7 @@ fn handle(
       actor.continue(state)
     }
     Snapshot(reply_to:) -> {
-      process.send(reply_to, snapshot_of(state))
+      process.send(reply_to, snapshot_of(peer_state))
       actor.continue(state)
     }
     Stop -> actor.stop()
@@ -248,14 +298,19 @@ fn snapshot_of(state: PeerState) -> PeerSnapshot {
   )
 }
 
-fn sync_text(state: PeerState) -> #(PeerState, Int, Int) {
+fn remember(known: Set(String), ops: List(WireOp)) -> Set(String) {
+  list.fold(ops, known, fn(acc, op) { set.insert(acc, op_id(op)) })
+}
+
+fn sync_text(runtime: RuntimeState) -> #(RuntimeState, Int, Int) {
+  let state = runtime.peer_state
   case
-    client.sync(
+    client.sync_delta(
       state.peer,
       state.host,
       state.port,
       text_room,
-      state.text_cursor,
+      runtime.known_text,
       state.pending_text,
     )
   {
@@ -267,27 +322,28 @@ fn sync_text(state: PeerState) -> #(PeerState, Int, Int) {
             Error(_) -> doc
           }
         })
-      let state =
-        PeerState(
-          ..state,
-          document:,
-          text_cursor: response.cursor,
-          pending_text: [],
+      let state = PeerState(..state, document:, pending_text: [])
+      let runtime =
+        RuntimeState(
+          ..runtime,
+          peer_state: state,
+          known_text: remember(runtime.known_text, response.forward),
         )
-      #(state, response.stored, list.length(response.forward))
+      #(runtime, response.stored, list.length(response.forward))
     }
-    Error(_) -> #(state, 0, 0)
+    Error(_) -> #(runtime, 0, 0)
   }
 }
 
-fn sync_register(state: PeerState) -> #(PeerState, Int, Int) {
+fn sync_register(runtime: RuntimeState) -> #(RuntimeState, Int, Int) {
+  let state = runtime.peer_state
   case
-    client.sync(
+    client.sync_delta(
       state.peer,
       state.host,
       state.port,
       register_room,
-      state.register_cursor,
+      runtime.known_register,
       state.pending_register,
     )
   {
@@ -299,27 +355,28 @@ fn sync_register(state: PeerState) -> #(PeerState, Int, Int) {
             Error(_) -> document
           }
         })
-      let state =
-        PeerState(
-          ..state,
-          register: reg,
-          register_cursor: response.cursor,
-          pending_register: [],
+      let state = PeerState(..state, register: reg, pending_register: [])
+      let runtime =
+        RuntimeState(
+          ..runtime,
+          peer_state: state,
+          known_register: remember(runtime.known_register, response.forward),
         )
-      #(state, response.stored, list.length(response.forward))
+      #(runtime, response.stored, list.length(response.forward))
     }
-    Error(_) -> #(state, 0, 0)
+    Error(_) -> #(runtime, 0, 0)
   }
 }
 
-fn sync_set(state: PeerState) -> #(PeerState, Int, Int) {
+fn sync_set(runtime: RuntimeState) -> #(RuntimeState, Int, Int) {
+  let state = runtime.peer_state
   case
-    client.sync(
+    client.sync_delta(
       state.peer,
       state.host,
       state.port,
       set_room,
-      state.set_cursor,
+      runtime.known_set,
       state.pending_set,
     )
   {
@@ -331,10 +388,15 @@ fn sync_set(state: PeerState) -> #(PeerState, Int, Int) {
             Error(_) -> document
           }
         })
-      let state =
-        PeerState(..state, set:, set_cursor: response.cursor, pending_set: [])
-      #(state, response.stored, list.length(response.forward))
+      let state = PeerState(..state, set:, pending_set: [])
+      let runtime =
+        RuntimeState(
+          ..runtime,
+          peer_state: state,
+          known_set: remember(runtime.known_set, response.forward),
+        )
+      #(runtime, response.stored, list.length(response.forward))
     }
-    Error(_) -> #(state, 0, 0)
+    Error(_) -> #(runtime, 0, 0)
   }
 }

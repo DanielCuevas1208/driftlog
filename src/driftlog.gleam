@@ -38,8 +38,8 @@
 
 import driftlog_demo
 
-/// The version of this release, such as `"0.2.0"`.
-pub const version: String = "0.2.0"
+/// The version of this release, such as `"0.3.0"`.
+pub const version: String = "0.3.0"
 
 /// Format a replica name for logs and demos.
 pub fn describe(peer: String) -> String {
@@ -50,7 +50,7 @@ pub fn describe(peer: String) -> String {
 pub const data_type_count: Int = 4
 
 /// The number of sync rooms a peer uses by default.
-pub const default_room_count: Int = 2
+pub const default_room_count: Int = 3
 
 /// Run the demo when invoked with `gleam run`.
 ///
