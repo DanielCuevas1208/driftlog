@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+title: Driftlog
+message: Please cite Driftlog when you reference this library.
+type: software
+authors:
+  - family-names: Cuevas
+    given-names: Daniel
+repository-code: https://github.com/DanielCuevas1208/driftlog
+license: Apache-2.0
+version: 0.3.0

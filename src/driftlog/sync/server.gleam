@@ -2,8 +2,8 @@
 ////
 //// The server stores operations and forwards them. It is a relay, not a
 //// participant: it never interprets an operation, so one server can serve
-//// any document type. Operations are stored per room (document id) in the
-//// order they arrive, and forwarded to each replica by cursor.
+//// any document type. Operations are stored per room (document id) in arrival
+//// order. Delta requests receive operations outside their known id set.
 ////
 //// The server is an OTP actor. A separate accept loop accepts connections and
 //// spawns one handler process per connection. Each handler runs one sync
@@ -11,8 +11,9 @@
 
 import driftlog/sync/net
 import driftlog/sync/protocol.{
-  type Request, type Response, type WireOp, decode_request, encode_response,
-  op_id,
+  type DeltaRequest, type DeltaResponse, type Request, type Response,
+  type WireOp, decode_delta_request, decode_request, encode_delta_response,
+  encode_response, op_id,
 }
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -21,11 +22,14 @@ import gleam/list
 import gleam/otp/actor
 import gleam/result
 import gleam/set.{type Set}
+import gleam/string
 
 /// A message the server actor accepts.
 pub type ServerMessage {
   /// Handle one sync request and reply with its response.
   Sync(reply_to: process.Subject(Response), request: Request)
+  /// Handle one state-delta request and reply with its response.
+  DeltaSync(reply_to: process.Subject(DeltaResponse), request: DeltaRequest)
   /// Stop the actor and its accept loop.
   Stop
 }
@@ -82,6 +86,14 @@ pub fn sync(
   actor.call(server, 10_000, Sync(_, request))
 }
 
+/// Ask the server to exchange a state delta.
+pub fn sync_delta(
+  server: process.Subject(ServerMessage),
+  request: DeltaRequest,
+) -> DeltaResponse {
+  actor.call(server, 10_000, DeltaSync(_, request))
+}
+
 fn handle(
   state: ServerState,
   message: ServerMessage,
@@ -89,6 +101,11 @@ fn handle(
   case message {
     Sync(reply_to:, request:) -> {
       let #(rooms, response) = process_request(state.rooms, request)
+      process.send(reply_to, response)
+      actor.continue(ServerState(rooms:, listener: state.listener))
+    }
+    DeltaSync(reply_to:, request:) -> {
+      let #(rooms, response) = process_delta_request(state.rooms, request)
       process.send(reply_to, response)
       actor.continue(ServerState(rooms:, listener: state.listener))
     }
@@ -108,14 +125,7 @@ fn process_request(
       dict.get(rooms, request.room),
       RoomState(ops: [], seen: set.new()),
     )
-  let new_ops =
-    list.filter(request.ops, fn(op) {
-      !set.contains(room_state.seen, op_id(op))
-    })
-  let seen =
-    list.fold(new_ops, room_state.seen, fn(acc, op) {
-      set.insert(acc, op_id(op))
-    })
+  let #(new_ops, seen) = new_operations(room_state.seen, request.ops)
   let ops = list.append(room_state.ops, new_ops)
   let forward = list.drop(ops, request.cursor)
   let cursor = list.length(ops)
@@ -124,6 +134,40 @@ fn process_request(
     dict.insert(rooms, request.room, RoomState(ops:, seen:)),
     protocol.Response(forward:, cursor:, stored:),
   )
+}
+
+fn process_delta_request(
+  rooms: Dict(String, RoomState),
+  request: DeltaRequest,
+) -> #(Dict(String, RoomState), DeltaResponse) {
+  let room_state =
+    result.unwrap(
+      dict.get(rooms, request.room),
+      RoomState(ops: [], seen: set.new()),
+    )
+  let #(new_ops, seen) = new_operations(room_state.seen, request.ops)
+  let ops = list.append(room_state.ops, new_ops)
+  let forward =
+    list.filter(ops, fn(op) { !set.contains(request.known, op_id(op)) })
+  #(
+    dict.insert(rooms, request.room, RoomState(ops:, seen:)),
+    protocol.DeltaResponse(forward:, stored: list.length(new_ops)),
+  )
+}
+
+fn new_operations(
+  seen: Set(String),
+  incoming: List(WireOp),
+) -> #(List(WireOp), Set(String)) {
+  let #(reversed, seen) =
+    list.fold(incoming, #([], seen), fn(acc, op) {
+      let #(new_ops, seen) = acc
+      case set.contains(seen, op_id(op)) {
+        True -> #(new_ops, seen)
+        False -> #([op, ..new_ops], set.insert(seen, op_id(op)))
+      }
+    })
+  #(list.reverse(reversed), seen)
 }
 
 fn accept_loop(
@@ -144,21 +188,47 @@ fn handle_connection(
   server: process.Subject(ServerMessage),
 ) -> Nil {
   case net.read_line(socket, <<>>) {
-    Ok(line) -> {
+    Ok(line) -> handle_line(socket, server, line)
+    Error(_) -> Nil
+  }
+  net.close(socket)
+}
+
+fn handle_line(
+  socket: net.Socket,
+  server: process.Subject(ServerMessage),
+  line: String,
+) -> Nil {
+  case decode_delta_request(line) {
+    Ok(request) -> {
+      let response = actor.call(server, 10_000, DeltaSync(_, request))
+      let _ =
+        net.send(
+          socket,
+          bit_array.from_string(encode_delta_response(response) <> line_end()),
+        )
+      Nil
+    }
+    Error(_) -> {
       case decode_request(line) {
         Ok(request) -> {
           let response = actor.call(server, 10_000, Sync(_, request))
           let _ =
             net.send(
               socket,
-              bit_array.from_string(encode_response(response) <> "\n"),
+              bit_array.from_string(encode_response(response) <> line_end()),
             )
           Nil
         }
         Error(_) -> Nil
       }
     }
-    Error(_) -> Nil
   }
-  net.close(socket)
+}
+
+fn line_end() -> String {
+  case string.utf_codepoint(10) {
+    Ok(codepoint) -> string.from_utf_codepoints([codepoint])
+    Error(_) -> ""
+  }
 }

@@ -37,7 +37,7 @@ accept(ListenSocket) ->
 
 connect(Host, Port) ->
     Options = [binary, {packet, raw}, {active, false}],
-    case gen_tcp:connect(to_charlist(Host), Port, Options) of
+    case gen_tcp:connect(host_address(Host), Port, Options) of
         {ok, Socket} -> {ok, Socket};
         {error, Reason} -> {error, format_reason(Reason)}
     end.
@@ -82,6 +82,13 @@ to_charlist(Host) when is_binary(Host) ->
     binary_to_list(Host);
 to_charlist(Host) when is_list(Host) ->
     Host.
+
+host_address(Host) ->
+    HostChars = to_charlist(Host),
+    case inet:parse_address(HostChars) of
+        {ok, Address} -> Address;
+        {error, _} -> HostChars
+    end.
 
 format_reason(Reason) ->
     unicode:characters_to_binary(io_lib:format("~p", [Reason])).

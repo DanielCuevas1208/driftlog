@@ -8,8 +8,8 @@
         { "op": "insert", "index": 16, "value": "lazy " }
       ],
       "register": [
-        { "op": "set", "value": "Driftlog v0.2" },
-        { "op": "set", "value": "Driftlog v0.2-final" }
+        { "op": "set", "value": "Driftlog v0.3" },
+        { "op": "set", "value": "Driftlog v0.3-final" }
       ],
       "set": [
         { "op": "add", "value": "erlang" },
@@ -34,7 +34,7 @@
   ],
   "expected": {
     "text": "The quick lazy fox dog",
-    "register": "Driftlog v0.2-final",
+    "register": "Driftlog v0.3-final",
     "set": ["crdt", "erlang", "gleam"]
   }
 }
