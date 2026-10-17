@@ -3,6 +3,7 @@ import driftlog/orset
 import driftlog/register
 import driftlog/rga.{Delete, Insert}
 import driftlog/sync/protocol
+import gleam/set
 import gleeunit/should
 
 fn alice_insert() -> protocol.WireOp {
@@ -43,6 +44,24 @@ pub fn responses_round_trip_through_json_test() {
   let encoded = protocol.encode_response(response)
   let decoded = protocol.decode_response(encoded)
   should.equal(decoded, Ok(response))
+}
+
+pub fn delta_requests_round_trip_through_json_test() {
+  let request =
+    protocol.DeltaRequest(
+      peer: "alice-1",
+      room: "text",
+      known: set.from_list(["insert:alice-1:1", "delete:bob-1:2"]),
+      ops: [alice_insert()],
+    )
+  let encoded = protocol.encode_delta_request(request)
+  should.equal(protocol.decode_delta_request(encoded), Ok(request))
+}
+
+pub fn delta_responses_round_trip_through_json_test() {
+  let response = protocol.DeltaResponse(forward: [alice_insert()], stored: 1)
+  let encoded = protocol.encode_delta_response(response)
+  should.equal(protocol.decode_delta_response(encoded), Ok(response))
 }
 
 pub fn operation_ids_are_distinct_test() {

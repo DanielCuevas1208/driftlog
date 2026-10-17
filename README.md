@@ -7,6 +7,12 @@ Any delivery order produces the same result.
 
 The stack is Gleam, Erlang/OTP, and gleeunit.
 
+## Value
+
+Driftlog keeps edits local during disconnection.
+Replicas merge by stable operation identifiers.
+Concurrent edits converge without a central ordering decision.
+
 ## What is inside
 
 Driftlog has four data types and a small sync stack.
@@ -22,6 +28,9 @@ The data types keep their state in memory.
 The sync server stores operations and forwards them.
 It does not interpret the operations.
 One server can serve any document type.
+
+Peers can exchange deltas by operation id.
+The server returns only operations a peer does not know.
 
 ## How it works
 
@@ -48,6 +57,9 @@ Merging two replicas gives the same state as merging the reverse order.
 Applying the same operations in any order gives the same state.
 This is the property the tests check.
 
+Delta exchange uses the known operation ids from each peer.
+It does not require a contiguous cursor.
+
 ## Requirements
 
 - Erlang/OTP 26 or newer
@@ -55,6 +67,14 @@ This is the property the tests check.
 
 Gleam needs Erlang on the `PATH`.
 On Windows, add the Gleam install directory to the `PATH`.
+
+## Setup
+
+Download the locked dependencies.
+
+```sh
+gleam deps download
+```
 
 ## Run the demo
 
@@ -67,11 +87,17 @@ They converge to the same state.
 gleam run
 ```
 
-Use these commands for the other modes.
+Replay each fixture through a real server.
 
 ```sh
+gleam run -- replay fixtures/concurrent-typing.json
 gleam run -- replay fixtures/field-notes.json
 gleam run -- replay fixtures/team-tags.json
+```
+
+Run a standalone server on port `0`.
+
+```sh
 gleam run -- server 0
 ```
 
@@ -93,11 +119,11 @@ They show the same text, register, and set.
 ---------------
 alice-1
     text     "The quick lazy fox dog"
-    register "Driftlog v0.2-final"
+    register "Driftlog v0.3-final"
     set      ["crdt", "erlang", "gleam"]
 bob-1
     text     "The quick lazy fox dog"
-    register "Driftlog v0.2-final"
+    register "Driftlog v0.3-final"
     set      ["crdt", "erlang", "gleam"]
 Result: converged to the expected state.
 ```
@@ -148,13 +174,17 @@ Two replicas with the same name could mint the same stamp.
 
 ## Sync
 
-A peer sends a request to the server.
-The request holds the replica name, the room, a cursor, and new operations.
-The room names the document.
-The cursor is the number of operations the replica has seen.
-The server stores new operations.
-It forwards the operations the replica has not seen.
-The response holds the forwarded operations and the new cursor.
+A peer sends a delta request to the server.
+The request holds the peer name, room name, known operation ids, and new operations.
+The server stores new operations by stable id.
+The response holds operations outside the known id set.
+
+The room identifies one document.
+The server stores one operation log per room.
+The server does not interpret document operations.
+
+The older cursor request remains available.
+It supports ordered replay for clients that need it.
 
 Operations carry a stable id.
 The server drops duplicates.
@@ -162,6 +192,9 @@ A client can apply an operation twice without changing its state.
 
 The wire format is newline-delimited JSON.
 Each exchange is one request and one response.
+
+Delta requests use the `delta` mode field.
+Responses use the same newline-delimited JSON framing.
 
 ## Sync server
 
@@ -184,11 +217,10 @@ Run the test suite.
 gleam test
 ```
 
-The suite has 72 tests and they all pass.
-It covers the data types and the merge properties.
-It also runs real socket exchanges against an in-memory server.
-All tests are deterministic.
+The suite has 76 deterministic tests.
+It covers data types, merge properties, protocol framing, and socket exchange.
 The random-edit tests use a seeded generator.
+The sync tests use an in-memory server.
 
 ## Build
 
@@ -201,6 +233,17 @@ Run the formatter check.
 ```sh
 gleam format --check src test
 ```
+
+Run all local checks.
+
+```sh
+gleam format --check src test
+gleam check
+gleam test
+gleam build
+```
+
+CI also replays all three fixture scenarios.
 
 ## Architecture
 
@@ -216,9 +259,9 @@ src/
     sync/
       protocol.gleam      JSON wire protocol
       net.gleam           socket wrapper around gen_tcp
-      client.gleam        one sync round trip
+      client.gleam        cursor and delta sync clients
       server.gleam        store-and-forward server actor
-      peer.gleam          a replica actor with documents
+      peer.gleam          replica actor with known operation ids
       scenario.gleam      scripted edit scenarios
   driftlog_demo.gleam     the demo command line
   driftlog_net_ffi.erl    gen_tcp external functions
@@ -233,19 +276,28 @@ Complete in 0.2.0:
 - Add an observed-remove set (`driftlog/orset`).
 - Carry set operations over the sync protocol and the peer.
 
+Complete in 0.3.0:
+
+- Exchange unknown operations by stable id.
+- Keep the cursor request for ordered replay.
+- Replay every fixture in CI.
+
 Remaining:
 
-- Version 0.2: add delta state exchange to the server.
-- Version 0.3: persist the server state to disk.
-- Version 0.3: add a text API with ranges and undo.
-- Version 0.4: add end-to-end encryption for the wire format.
+- Version 0.4: persist the server state to disk.
+- Version 0.4: add text ranges and undo.
+- Version 0.5: add end-to-end encryption for the wire format.
 
 ## Limitations
 
 - The server keeps state in memory.
   A restart loses stored operations.
+- The server keeps the complete operation log for each room.
+  Delta exchange does not compact old operations.
 - The server has no authentication.
   It is for local use.
+- A peer keeps known operation ids for its actor lifetime.
+  A long session uses more memory.
 - The RGA materializes the list on every read.
   Very large documents are slower than a delta-based design.
 - The text document edits in graphemes.

@@ -77,6 +77,38 @@ pub fn the_server_drops_duplicate_operations_test() {
   server.stop(server_subject)
 }
 
+pub fn delta_sync_returns_only_unknown_operations_test() {
+  let #(server_subject, port) = server.start(0) |> should.be_ok
+  let host = "127.0.0.1"
+  let first_op = alice_insert(1)
+  let second_op =
+    protocol.WireInsert(
+      atom: Atom(Stamp(2, "bob-1")),
+      parent: Atom(Stamp(1, "alice-1")),
+      value: "y",
+    )
+
+  let first =
+    client.sync_delta("alice-1", host, port, "text", set.new(), [first_op])
+    |> should.be_ok
+  should.equal(first.stored, 1)
+
+  let second =
+    client.sync_delta(
+      "bob-1",
+      host,
+      port,
+      "text",
+      set.from_list([protocol.op_id(first_op)]),
+      [second_op, second_op],
+    )
+    |> should.be_ok
+  should.equal(second.stored, 1)
+  should.equal(second.forward, [second_op])
+
+  server.stop(server_subject)
+}
+
 pub fn peers_converge_through_the_server_test() {
   let #(server_subject, port) = server.start(0) |> should.be_ok
 

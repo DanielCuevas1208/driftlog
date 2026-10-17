@@ -8,6 +8,9 @@
 ////
 //// Operations are addressed by a stable id, so a server can drop duplicates
 //// and a client can apply an operation twice without changing its state.
+////
+//// Delta requests carry the operation ids already held by a peer. The server
+//// returns only operations outside that known set.
 
 import driftlog/clock.{type Atom, type Stamp, Atom, Stamp, atom_id, stamp_id}
 import driftlog/orset
@@ -15,7 +18,10 @@ import driftlog/register
 import driftlog/rga.{type ListOp}
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/result
+import gleam/set.{type Set}
+import gleam/string
 
 /// An operation in a form that JSON can carry.
 ///
@@ -37,6 +43,24 @@ pub type Request {
 /// A server-to-client sync response.
 pub type Response {
   Response(forward: List(WireOp), cursor: Int, stored: Int)
+}
+
+/// A state-delta sync request.
+///
+/// `known` contains operation ids already held by the peer. The server can
+/// return only operations outside that set, even when delivery was sparse.
+pub type DeltaRequest {
+  DeltaRequest(
+    peer: String,
+    room: String,
+    known: Set(String),
+    ops: List(WireOp),
+  )
+}
+
+/// A state-delta sync response.
+pub type DeltaResponse {
+  DeltaResponse(forward: List(WireOp), stored: Int)
 }
 
 /// A stable identifier for an operation.
@@ -141,6 +165,46 @@ pub fn decode_response(line: String) -> Result(Response, String) {
   |> result.map_error(fn(_) { "malformed response" })
 }
 
+/// Encode a state-delta request to one JSON line.
+pub fn encode_delta_request(request: DeltaRequest) -> String {
+  json.object([
+    #("mode", json.string("delta")),
+    #("peer", json.string(request.peer)),
+    #("room", json.string(request.room)),
+    #(
+      "known",
+      json.array(
+        from: request.known |> set.to_list |> list.sort(by: string.compare),
+        of: json.string,
+      ),
+    ),
+    #("ops", json.array(from: request.ops, of: wire_op_to_json)),
+  ])
+  |> json.to_string
+}
+
+/// Decode a state-delta request from one JSON line.
+pub fn decode_delta_request(line: String) -> Result(DeltaRequest, String) {
+  json.parse(from: line, using: delta_request_decoder())
+  |> result.map_error(fn(_) { "malformed delta request" })
+}
+
+/// Encode a state-delta response to one JSON line.
+pub fn encode_delta_response(response: DeltaResponse) -> String {
+  json.object([
+    #("mode", json.string("delta")),
+    #("forward", json.array(from: response.forward, of: wire_op_to_json)),
+    #("stored", json.int(response.stored)),
+  ])
+  |> json.to_string
+}
+
+/// Decode a state-delta response from one JSON line.
+pub fn decode_delta_response(line: String) -> Result(DeltaResponse, String) {
+  json.parse(from: line, using: delta_response_decoder())
+  |> result.map_error(fn(_) { "malformed delta response" })
+}
+
 fn wire_op_to_json(op: WireOp) -> json.Json {
   case op {
     WireSet(value:, stamp:) ->
@@ -199,6 +263,42 @@ fn response_decoder() -> decode.Decoder(Response) {
   use cursor <- decode.field("cursor", decode.int)
   use stored <- decode.field("stored", decode.int)
   decode.success(Response(forward:, cursor:, stored:))
+}
+
+fn delta_request_decoder() -> decode.Decoder(DeltaRequest) {
+  use mode <- decode.field("mode", decode.string)
+  case mode {
+    "delta" -> {
+      use peer <- decode.field("peer", decode.string)
+      use room <- decode.field("room", decode.string)
+      use known_ids <- decode.field("known", decode.list(of: decode.string))
+      use ops <- decode.field("ops", decode.list(of: wire_op_decoder()))
+      let known =
+        list.fold(known_ids, set.new(), fn(acc, id) { set.insert(acc, id) })
+      decode.success(DeltaRequest(peer:, room:, known:, ops:))
+    }
+    _ ->
+      decode.failure(
+        DeltaRequest(peer: "", room: "", known: set.new(), ops: []),
+        "delta request mode",
+      )
+  }
+}
+
+fn delta_response_decoder() -> decode.Decoder(DeltaResponse) {
+  use mode <- decode.field("mode", decode.string)
+  case mode {
+    "delta" -> {
+      use forward <- decode.field("forward", decode.list(of: wire_op_decoder()))
+      use stored <- decode.field("stored", decode.int)
+      decode.success(DeltaResponse(forward:, stored:))
+    }
+    _ ->
+      decode.failure(
+        DeltaResponse(forward: [], stored: 0),
+        "delta response mode",
+      )
+  }
 }
 
 fn wire_op_decoder() -> decode.Decoder(WireOp) {

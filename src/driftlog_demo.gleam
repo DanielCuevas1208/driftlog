@@ -28,7 +28,7 @@ import gleam/string
 
 const host = "127.0.0.1"
 
-const demo_version = "0.2.0"
+const demo_version = "0.3.0"
 
 /// A started peer actor and its replica name.
 type ConnectedPeer {
@@ -303,8 +303,8 @@ fn demo_scenario() -> Scenario {
         name: "alice-1",
         text: [EditInsert(index: 16, value: "lazy ")],
         register: [
-          EditSetRegister("Driftlog v0.2"),
-          EditSetRegister("Driftlog v0.2-final"),
+          EditSetRegister("Driftlog v0.3"),
+          EditSetRegister("Driftlog v0.3-final"),
         ],
         set: [EditAdd("erlang"), EditAdd("gleam")],
       ),
@@ -319,7 +319,7 @@ fn demo_scenario() -> Scenario {
       ),
     ],
     expected_text: "The quick lazy fox dog",
-    expected_register: "Driftlog v0.2-final",
+    expected_register: "Driftlog v0.3-final",
     expected_set: ["crdt", "erlang", "gleam"],
   )
 }
